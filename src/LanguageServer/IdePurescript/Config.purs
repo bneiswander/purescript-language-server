@@ -90,7 +90,7 @@ autoCompleteAllModules :: ConfigFn Boolean
 autoCompleteAllModules = getBoolean "autocompleteAllModules" true
 
 buildCommand :: ConfigFn String
-buildCommand = getString "buildCommand" "spago build --purs-args --json-errors"
+buildCommand = getString "buildCommand" "spago build --json-errors"
 
 addNpmPath :: ConfigFn Boolean
 addNpmPath = getBoolean "addNpmPath" false
