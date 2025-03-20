@@ -16,6 +16,7 @@ You can edit this file as you like.
   , "contravariant"
   , "control"
   , "datetime"
+  , "debug"
   , "effect"
   , "either"
   , "enums"
@@ -34,7 +35,9 @@ You can edit this file as you like.
   , "newtype"
   , "node-buffer"
   , "node-child-process"
+  , "node-event-emitter"
   , "node-fs"
+  , "node-os"
   , "node-path"
   , "node-process"
   , "node-streams"
@@ -56,8 +59,6 @@ You can edit this file as you like.
   , "unsafe-coerce"
   , "untagged-union"
   , "uuid"
-  , "node-os"
-  , "node-event-emitter"
   ]
 , packages = ./packages.dhall
 , sources = [ "src/**/*.purs", "test/**/*.purs" ]

@@ -52,6 +52,7 @@ import Data.Either (either)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Traversable (traverse)
 import Foreign (F, Foreign, readArray, readBoolean, readInt, readString)
+
 import Foreign.Index ((!))
 import PscIde.Command (CodegenTarget(..))
 import PscIde.Server (LogLevel(..))

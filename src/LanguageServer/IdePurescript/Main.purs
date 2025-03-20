@@ -4,15 +4,16 @@ module LanguageServer.IdePurescript.Main
 
 import Prelude
 
-import Control.Monad.Except (runExcept)
+import Control.Monad.Except (except, lift, runExcept, runExceptT)
 import Control.Promise (Promise)
 import Control.Promise as Promise
+import Data.Argonaut (stringify)
 import Data.Array ((!!))
 import Data.Array as Array
 import Data.Either (Either(..), either)
 import Data.Foldable (or)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isNothing, maybe, maybe')
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe, maybe')
 import Data.Newtype (over, un, unwrap)
 import Data.Nullable (toMaybe, toNullable)
 import Data.Nullable as Nullable
@@ -22,6 +23,7 @@ import Data.String as String
 import Data.Traversable (for, traverse)
 import Data.Tuple (Tuple(..))
 import Data.Tuple.Nested ((/\))
+import Debug (spy)
 import Effect (Effect)
 import Effect.Aff (Aff, Milliseconds(..), apathize, attempt, delay, forkAff, launchAff_, try)
 import Effect.Aff.AVar (AVar)
@@ -30,8 +32,10 @@ import Effect.Class (liftEffect)
 import Effect.Console as Console
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
-import Foreign (Foreign, unsafeToForeign)
+import Foreign (Foreign, readBoolean, readString, typeOf, unsafeToForeign)
+import Foreign.Index ((!))
 import Foreign.JSON (parseJSON)
+import Foreign.Keys (keys)
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import IdePurescript.Modules (getModulesForFileTemp, initialModulesState)
@@ -44,6 +48,7 @@ import LanguageServer.IdePurescript.CodeLenses (getCodeLenses)
 import LanguageServer.IdePurescript.CodeLenses as CodeLenses
 import LanguageServer.IdePurescript.Commands (addClauseCmd, addCompletionImportCmd, addModuleImportCmd, buildCmd, caseSplitCmd, cleanCmd, cmdName, commands, fixTypoCmd, getAvailableModulesCmd, replaceAllSuggestionsCmd, replaceSuggestionCmd, restartPscIdeCmd, searchCmd, sortImportsCmd, startPscIdeCmd, stopPscIdeCmd, typedHoleExplicitCmd)
 import LanguageServer.IdePurescript.Completion (getCompletions, resolveCompletion)
+import LanguageServer.IdePurescript.Config (fastRebuild, getBoolean)
 import LanguageServer.IdePurescript.Config as Config
 import LanguageServer.IdePurescript.FileTypes as FileTypes
 import LanguageServer.IdePurescript.FoldingRanges (getFoldingRanges)
@@ -135,7 +140,8 @@ parseArgs allArgs = go 0 defaultArgs
   go i c =
     case args !! i of
       Just "--config" -> case args !! (i + 1) of
-        Just conf -> go (i + 2) (c { config = Just conf })
+        Just conf -> go (i + 2)
+          (c { config = Just (spy ">>>>>>>>>>> config string" conf) })
         Nothing -> Nothing
       Just "--log" -> case args !! (i + 1) of
         Just filename -> go (i + 2) (c { filename = Just filename })
@@ -464,7 +470,9 @@ handleEvents config conn state documents notify = do
         (getReferences notify documents)
   onHover conn
     $ runHandler
-        "onHover" getTextDocUri (getTooltips notify documents)
+        "onHover"
+        getTextDocUri
+        (getTooltips notify documents)
   onCodeAction conn
     $ runHandler
         "onCodeAction"
@@ -483,15 +491,15 @@ handleEvents config conn state documents notify = do
         <<< handleDidChangeWatchedFiles config conn state documents
   --
   onDidChangeContent documents
-    $ \{ document } -> do
+    $ \({ document }) -> do
         Build.handleDocumentChange config conn state notify document documents
   --
   onDidSaveDocument documents
-    $ \{ document } -> do
+    $ \({ document }) -> do
         Build.handleDocumentSave config conn state notify document documents
   --
   onDidCloseDocument documents
-    $ \{ document } -> do
+    $ \({ document }) -> do
         Build.handleDocumentClose config conn state notify document documents
 
 handleConfig ::
@@ -509,6 +517,32 @@ handleConfig config conn state cmdLineConfig notify = do
     setConfig source newConfig = do
       liftEffect do
         log conn $ "Got new config (" <> source <> ")"
+        log conn $ unsafeCoerce newConfig
+        bool <- fromMaybe false <$> do
+          let
+            handleLeft e = do
+              log conn $ "ERROR GETTING BOOLEAN"
+              log conn $ show e
+              pure Nothing
+          (either handleLeft (pure <<< Just) =<< ( runExceptT ( do
+            liftEffect $ log conn $ "newConfig type"
+            liftEffect $ log conn $ typeOf newConfig
+            -- str <- readString newConfig
+            -- json <- except $ runExcept $ parseJSON str
+            liftEffect $ log conn $ "attempting to get keys"
+            keys <- keys newConfig
+            liftEffect $ log conn $ "keys"
+            liftEffect $ log conn $ show keys
+            ps <- newConfig ! "purescript"
+            liftEffect $ log conn $ "ps"
+            liftEffect $ log conn $ stringify $ unsafeCoerce ps
+            res <- ps ! "fastRebuild"
+            liftEffect $ log conn $ "res"
+            liftEffect $ log conn $ stringify $ unsafeCoerce res
+            readBoolean res )
+            ))
+        log conn $ "getBoolean: " <> show bool
+        log conn $ "fast rebuild: " <> show (fastRebuild newConfig)
         Ref.write newConfig config
       AVar.tryPut unit gotConfig
         >>= case _ of
@@ -596,7 +630,7 @@ handleCommands config conn state documents notify = do
               , typedHoleExplicitCmd /\ voidHandler (fillTypedHole notify)
               ]
   onExecuteCommand conn
-    $ \{ command, arguments } ->
+    $ \({ command, arguments }) ->
         Promise.fromAff do
           c <- liftEffect $ Ref.read config
           s <- liftEffect $ Ref.read state
@@ -617,28 +651,39 @@ main = do
     Nothing -> do
       Console.error "Error parsing args"
       Process.exit' 1
-    Just { version: true } -> do
+    Just ({ version: true }) -> do
       v <- version
       Console.log v
     Just args -> do
       maybe (pure unit)
         (flip (FSSync.writeTextFile Encoding.UTF8) "Starting logging...\n")
         args.filename
-      let
-        config' = case args.config of
-          Just c -> either (const Nothing) Just $ runExcept $ parseJSON c
-          Nothing -> Nothing
-      main' { config: config', filename: args.filename }
+      main' args.config { filename: args.filename }
 
 main' ::
-  { config :: Maybe Foreign
-  , filename :: Maybe String
-  } ->
-  Effect Unit
-main' { filename: logFile, config: cmdLineConfig } = do
+  Maybe _
+  -> ({ filename :: Maybe String})
+  -> Effect Unit
+main' cmdLineConfig' { filename: logFile  } = do
   state <- Ref.new defaultServerState
   config <- Ref.new (unsafeToForeign {})
   conn <- connect state
+  cmdLineConfig <- case cmdLineConfig' of
+    Just c -> do
+      log conn $ "Config JSON"
+      log conn $ c
+      either
+        ( \e -> do
+            log conn $ "ERROR!!!!"
+            log conn $ show e
+            pure Nothing
+        )
+        (\j -> do
+            log conn $ "PARSEDJSON!!!!"
+            log conn $ unsafeCoerce j
+            pure $ Just j
+            ) $ runExcept $ parseJSON c
+    Nothing -> pure Nothing
   documents <- initDocumentStore conn
   let notify = mkNotify logFile state
   handleEvents config conn state documents notify
